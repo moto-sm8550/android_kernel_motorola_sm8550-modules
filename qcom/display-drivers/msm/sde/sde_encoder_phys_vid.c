@@ -484,7 +484,6 @@ static void sde_encoder_phys_vid_vblank_irq(void *arg, int irq_idx)
 {
 	struct sde_encoder_phys *phys_enc = arg;
 	struct sde_hw_ctl *hw_ctl;
-	struct intf_status intf_status = {0};
 	unsigned long lock_flags;
 	u32 flush_register = ~0;
 	u32 reset_status = 0;
@@ -542,20 +541,8 @@ not_flushed:
 		phys_enc->parent_ops.handle_vblank_virt(phys_enc->parent,
 				phys_enc);
 
-	if (phys_enc->hw_intf->ops.get_status)
-		phys_enc->hw_intf->ops.get_status(phys_enc->hw_intf,
-			&intf_status);
-
 	if (flush_register && hw_ctl->ops.get_hw_fence_status)
 		fence_ready = hw_ctl->ops.get_hw_fence_status(hw_ctl);
-
-	SDE_EVT32_IRQ(DRMID(phys_enc->parent), phys_enc->hw_intf->idx - INTF_0,
-			old_cnt, atomic_read(&phys_enc->pending_kickoff_cnt),
-			reset_status ? SDE_EVTLOG_ERROR : 0,
-			flush_register, event,
-			atomic_read(&phys_enc->pending_retire_fence_cnt),
-			intf_status.frame_count, intf_status.line_count,
-			fence_ready);
 
 	/* Signal any waiting atomic commit thread */
 	wake_up_all(&phys_enc->pending_kickoff_wq);
@@ -1325,10 +1312,6 @@ static u32 sde_encoder_phys_vid_get_underrun_line_count(
 	if (!sde_encoder_phys_vid_is_master(phys_enc) || !phys_enc->hw_intf)
 		return -EINVAL;
 
-	if (phys_enc->hw_intf->ops.get_status)
-		phys_enc->hw_intf->ops.get_status(phys_enc->hw_intf,
-			&intf_status);
-
 	if (phys_enc->hw_intf->ops.get_underrun_line_count)
 		underrun_linecount =
 		  phys_enc->hw_intf->ops.get_underrun_line_count(
@@ -1337,10 +1320,6 @@ static u32 sde_encoder_phys_vid_get_underrun_line_count(
 	if (phys_enc->hw_intf->ops.get_intr_status)
 		intf_intr_status = phys_enc->hw_intf->ops.get_intr_status(
 				phys_enc->hw_intf);
-
-	SDE_EVT32(DRMID(phys_enc->parent), underrun_linecount,
-		intf_status.frame_count, intf_status.line_count,
-		intf_intr_status);
 
 	return underrun_linecount;
 }
