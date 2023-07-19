@@ -1304,7 +1304,6 @@ static u32 sde_encoder_phys_vid_get_underrun_line_count(
 {
 	u32 underrun_linecount = 0xebadebad;
 	u32 intf_intr_status = 0xebadebad;
-	struct intf_status intf_status = {0};
 
 	if (!phys_enc)
 		return -EINVAL;
