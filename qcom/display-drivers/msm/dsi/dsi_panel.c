@@ -674,9 +674,6 @@ int dsi_panel_set_backlight(struct dsi_panel *panel, u32 bl_lvl)
 skip_set:
 	bl->real_bl_level = bl_lvl;
 
-	if (panel->fod_hbm_enabled)
-		dsi_panel_apply_hbm_status(panel);
-
 	return rc;
 }
 
@@ -3796,19 +3793,17 @@ static int dsi_panel_set_hbm_status(struct dsi_panel *panel,
 		return -EINVAL;
 	}
 
-	if (type == DSI_CMD_SET_HBM_FOD_ON || type == DSI_CMD_SET_HBM_OFF) {
-		rc = dsi_panel_update_hbm_cmd(cmd_set, MIPI_DCS_SET_DISPLAY_BRIGHTNESS,
-					      bl_level);
-		if (rc) {
-			DSI_ERR("failed to update command with type: %u\n", type);
-			return rc;
-		}
-
+	if (type == DSI_CMD_SET_HBM_FOD_ON) {
 		rc = dsi_panel_update_hbm_cmd(cmd_set, panel->lhbm_config.alpha_reg,
 					      alpha_val);
 		if (rc) {
 			DSI_ERR("failed to update command with type: %u\n", type);
-			return rc;
+		}
+	} else if (type == DSI_CMD_SET_HBM_OFF) {
+		rc = dsi_panel_update_hbm_cmd(cmd_set, MIPI_DCS_SET_DISPLAY_BRIGHTNESS,
+					      bl_level);
+		if (rc) {
+			DSI_ERR("failed to update command with type: %u\n", type);
 		}
 	}
 
@@ -3816,6 +3811,13 @@ static int dsi_panel_set_hbm_status(struct dsi_panel *panel,
 	if (rc) {
 		DSI_ERR("failed to send command with type: %u\n", type);
 		return rc;
+	} else {
+	    panel->hbm_enabled = hbm_status;
+		panel->fod_hbm_enabled = fod_hbm_status;
+
+		rc = dsi_panel_set_backlight(panel, bl_level);
+		if (rc)
+			DSI_ERR("unable to set backlight\n");
 	}
 
 	return 0;
@@ -3880,8 +3882,6 @@ static ssize_t sysfs_hbm_write(struct device *dev,
 	if (rc)
 		goto exit;
 
-	panel->hbm_enabled = status;
-
 exit:
 	mutex_unlock(&panel->panel_lock);
 
@@ -3925,8 +3925,6 @@ static ssize_t sysfs_fod_hbm_write(struct device *dev,
 	rc = dsi_panel_set_hbm_status(panel, status, panel->hbm_enabled);
 	if (rc)
 		goto exit;
-
-	panel->fod_hbm_enabled = status;
 
 exit:
 	mutex_unlock(&panel->panel_lock);
