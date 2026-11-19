@@ -903,7 +903,6 @@ static bool sde_encoder_phys_vid_intf_running(
 static int _sde_encoder_phys_vid_wait_for_vblank(
 		struct sde_encoder_phys *phys_enc, bool notify)
 {
-	struct sde_encoder_phys_vid *vid_enc;
 	struct sde_encoder_wait_info wait_info = {0};
 	int ret = 0, new_cnt;
 	u32 event = SDE_ENCODER_FRAME_EVENT_ERROR |
@@ -919,7 +918,6 @@ static int _sde_encoder_phys_vid_wait_for_vblank(
 		return -EINVAL;
 	}
 
-	vid_enc = to_sde_encoder_phys_vid(phys_enc);
 	hw_ctl = phys_enc->hw_ctl;
 	conn = phys_enc->connector;
 
@@ -962,8 +960,9 @@ static int _sde_encoder_phys_vid_wait_for_vblank(
 		 */
 		if (ret && notify &&
 				!sde_encoder_phys_vid_intf_running(phys_enc)) {
-			SDE_DEBUG_VIDENC(vid_enc,
-					"intf not running, dropping commit done wait\n");
+			SDE_INFO("enc%d intf%d intf stopped, dropping commit done wait\n",
+					DRMID(phys_enc->parent),
+					phys_enc->hw_intf->idx - INTF_0);
 			SDE_EVT32(DRMID(phys_enc->parent),
 					phys_enc->hw_intf->idx - INTF_0,
 					SDE_EVTLOG_FUNC_CASE2);
