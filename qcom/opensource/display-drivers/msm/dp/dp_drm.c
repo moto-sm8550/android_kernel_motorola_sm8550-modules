@@ -532,6 +532,8 @@ int dp_connector_atomic_check(struct drm_connector *connector,
 	struct sde_connector *sde_conn;
 	struct drm_connector_state *old_state;
 	struct drm_connector_state *c_state;
+	struct drm_crtc_state *crtc_state;
+	bool enabling;
 
 	if (!connector || !display || !a_state)
 		return -EINVAL;
@@ -544,16 +546,23 @@ int dp_connector_atomic_check(struct drm_connector *connector,
 		return -EINVAL;
 
 	/*
-	 * A commit that attaches the connector to a crtc enables it and needs a
-	 * sink that can be programmed. It can be gone by now (cable pulled, HPD
-	 * low handled while the commit was in flight) and the enable would then
-	 * program nothing, leaving the crtc waiting for a commit_done until it
-	 * times out. Refuse that commit instead so userspace retries with a
-	 * state that reflects the disconnection. Updates on a connector that is
-	 * already on a crtc are left alone.
+	 * A commit enables the connector when it moves it to a crtc, and also
+	 * when it asks for a modeset on the crtc it is already on, since that
+	 * disables and re-enables the bridge chain. Either way the sink has to
+	 * be programmable: it can be gone by now (cable pulled, HPD low handled
+	 * while the commit was in flight) and the enable would program nothing,
+	 * leaving the crtc waiting for a commit_done until it times out. Refuse
+	 * that commit instead so userspace retries with a state that reflects
+	 * the disconnection. Plain updates such as page flips are left alone.
 	 */
-	if (c_state->crtc && c_state->crtc != old_state->crtc &&
-			dp->is_sink_ready && !dp->is_sink_ready(dp)) {
+	enabling = c_state->crtc && c_state->crtc != old_state->crtc;
+	if (!enabling && c_state->crtc) {
+		crtc_state = drm_atomic_get_new_crtc_state(a_state, c_state->crtc);
+		enabling = crtc_state &&
+				drm_atomic_crtc_needs_modeset(crtc_state);
+	}
+
+	if (enabling && dp->is_sink_ready && !dp->is_sink_ready(dp)) {
 		DP_ERR("sink no longer ready, failing commit\n");
 		return -EAGAIN;
 	}

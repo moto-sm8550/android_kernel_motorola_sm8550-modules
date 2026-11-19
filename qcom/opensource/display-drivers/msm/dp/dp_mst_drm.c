@@ -1180,6 +1180,7 @@ static int dp_mst_connector_atomic_check(struct drm_connector *connector,
 {
 	int rc = 0, slots, i;
 	bool vcpi_released = false;
+	bool enabling;
 	struct drm_connector_state *old_conn_state;
 	struct drm_connector_state *new_conn_state;
 	struct drm_crtc *old_crtc;
@@ -1205,13 +1206,22 @@ static int dp_mst_connector_atomic_check(struct drm_connector *connector,
 	old_conn_state = drm_atomic_get_old_connector_state(state, connector);
 
 	/*
-	 * Same as the SST connector, but only for commits that attach this
-	 * connector to a crtc: enabling a stream whose sink is already gone
-	 * would program nothing and leave the crtc waiting for its commit_done.
+	 * Same as the SST connector: an attach and a modeset on the crtc the
+	 * connector is already on both end up enabling the stream, and doing
+	 * that with a sink that is already gone would program nothing and leave
+	 * the crtc waiting for its commit_done.
 	 */
-	if (new_conn_state->crtc && dp_display->is_sink_ready &&
+	enabling = new_conn_state->crtc &&
 			(!old_conn_state ||
-			 new_conn_state->crtc != old_conn_state->crtc) &&
+			 new_conn_state->crtc != old_conn_state->crtc);
+	if (!enabling && new_conn_state->crtc) {
+		crtc_state = drm_atomic_get_new_crtc_state(state,
+				new_conn_state->crtc);
+		enabling = crtc_state &&
+				drm_atomic_crtc_needs_modeset(crtc_state);
+	}
+
+	if (enabling && dp_display->is_sink_ready &&
 			!dp_display->is_sink_ready(dp_display)) {
 		DP_ERR("mst sink no longer ready, failing commit\n");
 		return -EAGAIN;
