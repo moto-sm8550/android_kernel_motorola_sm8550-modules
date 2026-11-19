@@ -1548,9 +1548,13 @@ static int _sde_connector_set_ext_hdr_info(
 		goto end;
 	}
 
+	/*
+	 * The sink cannot be programmed with HDR metadata, so there is
+	 * nothing to do. Failing the property would abort the whole atomic
+	 * commit that carries it, so drop the metadata instead.
+	 */
 	if (!c_conn->hdr_supported) {
-		SDE_ERROR_CONN(c_conn, "sink doesn't support HDR\n");
-		rc = -ENOTSUPP;
+		SDE_DEBUG_CONN(c_conn, "sink doesn't support HDR, ignoring\n");
 		goto end;
 	}
 
