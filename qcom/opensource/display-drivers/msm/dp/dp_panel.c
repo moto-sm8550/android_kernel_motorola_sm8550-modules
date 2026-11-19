@@ -1848,15 +1848,23 @@ static int dp_panel_read_sink_caps(struct dp_panel *dp_panel,
 	rc = dp_panel_read_dpcd(dp_panel, multi_func);
 	if (rc || !is_link_rate_valid(drm_dp_link_rate_to_bw_code(
 		dp_panel->link_info.rate)) || !is_lane_count_valid(
-		dp_panel->link_info.num_lanes) ||
-		((drm_dp_link_rate_to_bw_code(dp_panel->link_info.rate)) >
-		dp_panel->max_bw_code)) {
+		dp_panel->link_info.num_lanes)) {
 		if ((rc == -ETIMEDOUT) || (rc == -ENODEV)) {
 			DP_ERR("DPCD read failed, return early\n");
 			goto end;
 		}
 		DP_ERR("panel dpcd read failed/incorrect, set default params\n");
 		dp_panel_set_default_link_params(dp_panel);
+	} else if (drm_dp_link_rate_to_bw_code(dp_panel->link_info.rate) >
+		dp_panel->max_bw_code) {
+		/*
+		 * Only the ceiling differs from what the sink advertises, so
+		 * clamp the rate instead of falling back to the failsafe link.
+		 */
+		dp_panel->link_info.rate =
+			drm_dp_bw_code_to_link_rate(dp_panel->max_bw_code);
+		DP_INFO("link rate clamped to %u (bw code 0x%x)\n",
+			dp_panel->link_info.rate, dp_panel->max_bw_code);
 	}
 
 	downstream_ports = dp_panel->dpcd[DP_DOWNSTREAMPORT_PRESENT] &
