@@ -1780,13 +1780,35 @@ void sde_encoder_irq_control(struct drm_encoder *drm_enc, bool enable)
 
 }
 
+/*
+ * Program the vsync irq of the physical encoders for a userspace vblank
+ * request. Encoders that never registered the irq are skipped on disable,
+ * otherwise the physical encoder reports the mismatch as -EINVAL.
+ */
+static void _sde_encoder_control_phys_vblank_irq(
+		struct sde_encoder_virt *sde_enc, bool enable)
+{
+	int i;
+
+	for (i = 0; i < sde_enc->num_phys_encs; i++) {
+		struct sde_encoder_phys *phys = sde_enc->phys_encs[i];
+
+		if (!phys || !phys->ops.control_vblank_irq)
+			continue;
+
+		if (!enable && !atomic_read(&phys->vblank_refcount))
+			continue;
+
+		phys->ops.control_vblank_irq(phys, enable);
+	}
+}
+
 /* keep track of the userspace vblank during modeset */
 static void _sde_encoder_modeset_helper_locked(struct drm_encoder *drm_enc,
 		u32 sw_event)
 {
 	struct sde_encoder_virt *sde_enc;
 	bool enable;
-	int i;
 
 	if (!drm_enc) {
 		SDE_ERROR("invalid encoder\n");
@@ -1810,12 +1832,7 @@ static void _sde_encoder_modeset_helper_locked(struct drm_encoder *drm_enc,
 	else
 		return;
 
-	for (i = 0; i < sde_enc->num_phys_encs; i++) {
-		struct sde_encoder_phys *phys = sde_enc->phys_encs[i];
-
-		if (phys && phys->ops.control_vblank_irq)
-			phys->ops.control_vblank_irq(phys, enable);
-	}
+	_sde_encoder_control_phys_vblank_irq(sde_enc, enable);
 }
 
 struct sde_rsc_client *sde_encoder_get_rsc_client(struct drm_encoder *drm_enc)
@@ -3823,7 +3840,6 @@ void sde_encoder_register_vblank_callback(struct drm_encoder *drm_enc,
 	struct sde_encoder_virt *sde_enc = to_sde_encoder_virt(drm_enc);
 	unsigned long lock_flags;
 	bool enable;
-	int i;
 
 	enable = vbl_cb ? true : false;
 
@@ -3840,21 +3856,7 @@ void sde_encoder_register_vblank_callback(struct drm_encoder *drm_enc,
 	sde_enc->crtc_vblank_cb_data = vbl_data;
 	spin_unlock_irqrestore(&sde_enc->enc_spinlock, lock_flags);
 
-	for (i = 0; i < sde_enc->num_phys_encs; i++) {
-		struct sde_encoder_phys *phys = sde_enc->phys_encs[i];
-
-		if (!phys || !phys->ops.control_vblank_irq)
-			continue;
-
-		/*
-		 * Nothing to disable if this encoder never registered the irq;
-		 * the physical encoder reports the mismatch as -EINVAL.
-		 */
-		if (!enable && !atomic_read(&phys->vblank_refcount))
-			continue;
-
-		phys->ops.control_vblank_irq(phys, enable);
-	}
+	_sde_encoder_control_phys_vblank_irq(sde_enc, enable);
 	sde_enc->vblank_enabled = enable;
 
 	if (!enable)
