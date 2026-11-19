@@ -604,6 +604,7 @@ static void _dp_mst_bridge_pre_disable_part2(struct dp_mst_bridge *dp_bridge)
 	struct sde_connector *c_conn =
 		to_sde_connector(dp_bridge->connector);
 	struct drm_dp_mst_port *port = c_conn->mst_port;
+	int rc;
 
 	DP_MST_DEBUG_V("enter\n");
 	SDE_EVT32_EXTERNAL(SDE_EVTLOG_FUNC_ENTRY,  DP_MST_CONN_ID(dp_bridge));
@@ -616,7 +617,34 @@ static void _dp_mst_bridge_pre_disable_part2(struct dp_mst_bridge *dp_bridge)
 		return;
 	}
 
-	mst->mst_fw_cbs->check_act_status(&mst->mst_mgr);
+	/*
+	 * The clear requested in part-1 is best effort in the core:
+	 * drm_dp_destroy_payload_step1() drops its DPCD writes on the floor, so
+	 * an unacknowledged clear is only visible here. If the hub never
+	 * confirmed it, it may still be forwarding into this vcpi, and handing
+	 * that vcpi back would let a later stream be given slots the hub is
+	 * still using.
+	 */
+	rc = mst->mst_fw_cbs->check_act_status(&mst->mst_mgr);
+	if (rc) {
+		DP_ERR("mst: no act on payload clear, vcpi:%d kept. bridge:%d rc:%d\n",
+				dp_bridge->vcpi, dp_bridge->id, rc);
+
+		/*
+		 * Skip deallocate_vcpi() so the vcpi id stays reserved in the
+		 * topology, but drop the port's copy: part-1 already zeroed its
+		 * num_slots, and a vcpi left in place with no slots would make
+		 * the next enable skip re-initialising it.
+		 */
+		port->vcpi.vcpi = 0;
+		port->vcpi.num_slots = 0;
+		port->vcpi.pbn = 0;
+		port->vcpi.aligned_pbn = 0;
+
+		dp_bridge->vcpi = 0;
+		dp_bridge->pbn = 0;
+		return;
+	}
 
 	mst->mst_fw_cbs->update_payload_part2(&mst->mst_mgr);
 
