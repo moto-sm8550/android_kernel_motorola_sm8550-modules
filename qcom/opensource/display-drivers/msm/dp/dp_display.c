@@ -2365,6 +2365,9 @@ skip_node_name:
 		goto error_panel;
 	}
 
+	/* MST connectors have their own dp_panel, keep the base one reachable */
+	dp->dp_display.base_dp_panel = dp->panel;
+
 	ctrl_in.link = dp->link;
 	ctrl_in.panel = dp->panel;
 	ctrl_in.aux = dp->aux;

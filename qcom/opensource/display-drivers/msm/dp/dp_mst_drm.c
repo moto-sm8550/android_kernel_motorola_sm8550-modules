@@ -1022,6 +1022,7 @@ enum drm_mode_status dp_mst_connector_mode_valid(
 	struct drm_dp_mst_port *mst_port;
 	struct dp_display_mode dp_mode;
 	struct dp_panel *dp_panel;
+	struct dp_panel *base_panel;
 	uint16_t full_pbn, required_pbn;
 	int available_slots, required_slots;
 	struct dp_mst_bridge_state *dp_bridge_state;
@@ -1042,6 +1043,19 @@ enum drm_mode_status dp_mst_connector_mode_valid(
 		return MODE_ERROR;
 
 	vrefresh = drm_mode_vrefresh(mode);
+
+	/*
+	 * The max_refresh_rate debugfs knob is attached to the base panel and the
+	 * MST connector owns its own dp_panel, so read the cap from the base one
+	 * to keep both connector types behaving the same.
+	 */
+	base_panel = dp_display->base_dp_panel;
+	if (base_panel && base_panel->max_refresh_rate &&
+			vrefresh > base_panel->max_refresh_rate) {
+		DP_INFO("mst rejecting %s: refresh %d above max_refresh_rate %d\n",
+				mode->name, vrefresh, base_panel->max_refresh_rate);
+		return MODE_BAD;
+	}
 
 	if (dp_panel->mode_override && (mode->hdisplay != dp_panel->hdisplay ||
 			mode->vdisplay != dp_panel->vdisplay ||

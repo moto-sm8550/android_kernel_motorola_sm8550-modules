@@ -697,6 +697,7 @@ enum drm_mode_status dp_connector_mode_valid(struct drm_connector *connector,
 	 * Optional cap for debugging sink/link failures at high refresh rates.
 	 * Rejecting the mode here makes drm_helper_probe_single_connector_modes()
 	 * prune it, so userspace never offers it. Debugfs: max_refresh_rate.
+	 * The MST connector applies the same cap from dp_display->base_dp_panel.
 	 */
 	if (dp_panel->max_refresh_rate &&
 			vrefresh > dp_panel->max_refresh_rate) {
