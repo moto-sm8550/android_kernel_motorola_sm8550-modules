@@ -3324,9 +3324,32 @@ void sde_encoder_set_cwb_pending(struct drm_encoder *drm_enc, bool enable)
 			sde_enc->phys_encs[i]->cwb_disable_pending = enable;
 	}
 }
+
+/*
+ * Return true if any physical encoder still holds a userspace vblank request.
+ * Without one nothing can clear sde_enc->vblank_enabled, so waiting for it
+ * would only burn the whole kickoff timeout.
+ */
+static bool sde_encoder_vblank_irq_in_use(struct sde_encoder_virt *sde_enc)
+{
+	int i;
+
+	for (i = 0; i < sde_enc->num_phys_encs &&
+			i < ARRAY_SIZE(sde_enc->phys_encs); i++) {
+		struct sde_encoder_phys *phys = sde_enc->phys_encs[i];
+
+		if (phys && phys->ops.control_vblank_irq &&
+				atomic_read(&phys->vblank_refcount))
+			return true;
+	}
+
+	return false;
+}
+
 static void sde_encoder_wait_for_vsync_event_complete(struct sde_encoder_virt *sde_enc)
 {
 	u32 timeout_ms = DEFAULT_KICKOFF_TIMEOUT_MS;
+	unsigned long lock_flags;
 	int i, ret;
 
 	if (sde_enc->cur_master)
@@ -3347,6 +3370,17 @@ static void sde_encoder_wait_for_vsync_event_complete(struct sde_encoder_virt *s
 			if (phys && phys->ops.control_vblank_irq)
 				phys->ops.control_vblank_irq(phys, false);
 		}
+
+		/*
+		 * The irq is gone either way. Clear the flag so a later disable does
+		 * not wait for a vblank-off that nobody is going to send anymore.
+		 * The flag mirrors the userspace request programmed by
+		 * sde_encoder_control_vblank_irq(), so take the same lock.
+		 */
+		spin_lock_irqsave(&sde_enc->enc_spinlock, lock_flags);
+		sde_enc->vblank_enabled = false;
+		spin_unlock_irqrestore(&sde_enc->enc_spinlock, lock_flags);
+		wake_up_all(&sde_enc->vsync_event_wq);
 	}
 }
 
@@ -3464,7 +3498,8 @@ static void sde_encoder_virt_disable(struct drm_encoder *drm_enc)
 	 * to ensure vbalnk irq is disabled.
 	 */
 	if (sde_enc->vblank_enabled &&
-			!msm_is_mode_seamless_poms(&c_state->msm_mode))
+			!msm_is_mode_seamless_poms(&c_state->msm_mode) &&
+			sde_encoder_vblank_irq_in_use(sde_enc))
 		sde_encoder_wait_for_vsync_event_complete(sde_enc);
 
 	/*
