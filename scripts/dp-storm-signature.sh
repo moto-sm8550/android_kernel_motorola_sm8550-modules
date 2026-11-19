@@ -19,11 +19,8 @@
 #   commit_fail      wait-for-commit-done failures
 #   intf_stopped     commit-done waits abandoned because the interface timing
 #                    engine was already off (sink lost mid-commit), i.e. the
-#                    teardown the wait used to report as a failure. This one
-#                    needs SDE debug logging: capture with drm.debug=0x4, or
-#                    echo 'file sde_encoder_phys_vid.c +p' > \
-#                         /sys/kernel/debug/dynamic_debug/control
-#                    Without it the script prints a note and the field stays 0.
+#                    teardown the wait used to report as a failure. Logged at
+#                    info level, so a plain dmesg capture carries it.
 #   vsync_timeout    encoder vsync-event wait timeouts (84 ms stalls)
 #   vblank_einval    phys vblank disable with no registered irq (-EINVAL)
 #   sink_gate        atomic commits refused because the sink was gone
@@ -60,11 +57,7 @@ BEGIN { max_gap = 0; have_pre = 0 }
 	if (index($0, "dp_ctrl_link_maintenance"))        note("retrain")
 	if (index($0, "host not ready"))                  note("host_not_ready")
 	if (index($0, "wait for commit done fail"))       note("commit_fail")
-	if (index($0, "intf not running"))                note("intf_stopped")
-
-	# proxy for "this dump has SDE debug output at all": the typical vid wait
-	# prints pending_cnt on every kickoff at debug level
-	if (index($0, "pending_cnt")) dbg_seen = 1
+	if (index($0, "dropping commit done wait"))       note("intf_stopped")
 	if (index($0, "vsync event complete timed out"))  note("vsync_timeout")
 	if (index($0, "control vblank irq error"))        note("vblank_einval")
 	if (index($0, "no longer ready, failing commit")) note("sink_gate")
@@ -97,9 +90,6 @@ BEGIN { max_gap = 0; have_pre = 0 }
 	}
 }
 END {
-	if (!dbg_seen && !c["intf_stopped"])
-		printf "note: no SDE debug output in this dump, so intf_stopped cannot be measured; capture with drm.debug=0x4 or enable dynamic debug for sde_encoder_phys_vid.c\n" > "/dev/stderr"
-
 	printf "dp_teardown=%d dp_enable=%d stream_only=%d host_pwrdn=%d " \
 		"retrain=%d host_not_ready=%d commit_fail=%d intf_stopped=%d " \
 		"vsync_timeout=%d " \
