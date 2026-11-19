@@ -693,6 +693,18 @@ enum drm_mode_status dp_connector_mode_valid(struct drm_connector *connector,
 
 	vrefresh = drm_mode_vrefresh(mode);
 
+	/*
+	 * Optional cap for debugging sink/link failures at high refresh rates.
+	 * Rejecting the mode here makes drm_helper_probe_single_connector_modes()
+	 * prune it, so userspace never offers it. Debugfs: max_refresh_rate.
+	 */
+	if (dp_panel->max_refresh_rate &&
+			vrefresh > dp_panel->max_refresh_rate) {
+		DP_INFO("rejecting %s: refresh %d above max_refresh_rate %d\n",
+				mode->name, vrefresh, dp_panel->max_refresh_rate);
+		return MODE_BAD;
+	}
+
 	rc = dp_disp->get_available_dp_resources(dp_disp, avail_res,
 			&avail_dp_res);
 	if (rc) {

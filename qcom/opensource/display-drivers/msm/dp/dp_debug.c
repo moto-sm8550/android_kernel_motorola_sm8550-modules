@@ -2043,6 +2043,10 @@ static int dp_debug_init_link(struct dp_debug_private *debug,
 
 	debugfs_create_u32("link_bw_code", 0644, dir, &debug->panel->link_bw_code);
 
+	/* 0 = no cap; e.g. 60 makes the DP connector reject 1080p180 modes */
+	debugfs_create_u32("max_refresh_rate", 0644, dir,
+			&debug->panel->max_refresh_rate);
+
 	file = debugfs_create_file("mmrm_clk_cb", 0644, dir, debug, &mmrm_clk_cb_fops);
 	if (IS_ERR_OR_NULL(file)) {
 		rc = PTR_ERR(file);

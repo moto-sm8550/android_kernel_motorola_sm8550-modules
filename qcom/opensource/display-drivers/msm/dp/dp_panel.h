@@ -125,6 +125,8 @@ struct dp_panel {
 	u32 max_bw_code;
 	u32 lane_count;
 	u32 link_bw_code;
+	/* reject modes above this refresh rate, 0 = no limit */
+	u32 max_refresh_rate;
 
 	/* By default, stream_id is assigned to DP_INVALID_STREAM.
 	 * Client sets the stream id value using set_stream_id interface.
