@@ -438,15 +438,15 @@ static void _dp_mst_update_single_timeslot(struct dp_mst_private *mst,
 	}
 }
 
-static void _dp_mst_bridge_pre_enable_part1(struct dp_mst_bridge *dp_bridge)
+static int _dp_mst_bridge_pre_enable_part1(struct dp_mst_bridge *dp_bridge)
 {
 	struct dp_display *dp_display = dp_bridge->display;
 	struct sde_connector *c_conn =
 		to_sde_connector(dp_bridge->connector);
 	struct dp_mst_private *mst = dp_display->dp_mst_prv_info;
 	struct drm_dp_mst_port *port = c_conn->mst_port;
-	bool ret;
-	int pbn, slots;
+	bool allocated;
+	int pbn, slots, rc;
 
 	DP_MST_DEBUG_V("enter\n");
 	SDE_EVT32_EXTERNAL(SDE_EVTLOG_FUNC_ENTRY, DP_MST_CONN_ID(dp_bridge));
@@ -457,7 +457,7 @@ static void _dp_mst_bridge_pre_enable_part1(struct dp_mst_bridge *dp_bridge)
 		drm_dp_send_power_updown_phy(&mst->mst_mgr, port, true);
 		dp_display->wakeup_phy_layer(dp_display, false);
 		_dp_mst_update_single_timeslot(mst, dp_bridge);
-		return;
+		return 0;
 	}
 
 	pbn = mst->mst_fw_cbs->calc_pbn_mode(&dp_bridge->dp_mode);
@@ -467,20 +467,43 @@ static void _dp_mst_bridge_pre_enable_part1(struct dp_mst_bridge *dp_bridge)
 	DP_INFO("conn:%d pbn:%d, slots:%d\n", DP_MST_CONN_ID(dp_bridge),
 			dp_bridge->pbn,	dp_bridge->num_slots);
 
-	ret = mst->mst_fw_cbs->allocate_vcpi(&mst->mst_mgr,
+	allocated = mst->mst_fw_cbs->allocate_vcpi(&mst->mst_mgr,
 				       port, pbn, slots);
-	if (!ret) {
+	if (!allocated) {
 		DP_ERR("mst: failed to allocate vcpi. bridge:%d\n",
 				dp_bridge->id);
-		return;
+		return -ENOSPC;
 	}
 
 	dp_bridge->vcpi = port->vcpi.vcpi;
 	dp_bridge->pbn = pbn;
 
-	ret = mst->mst_fw_cbs->update_payload_part1(&mst->mst_mgr);
+	rc = mst->mst_fw_cbs->update_payload_part1(&mst->mst_mgr);
+	if (rc) {
+		DP_ERR("mst: failed to install payload. bridge:%d rc:%d\n",
+				dp_bridge->id, rc);
+
+		/*
+		 * The vcpi is reserved for this port and its payload entry is
+		 * half written. Release both, otherwise the table keeps an
+		 * entry that was never installed and every later commit for
+		 * this stream inherits the failure.
+		 */
+		mst->mst_fw_cbs->reset_vcpi_slots(&mst->mst_mgr, port);
+		if (mst->mst_fw_cbs->update_payload_part1(&mst->mst_mgr))
+			DP_ERR("mst: payload unwind failed. bridge:%d\n",
+					dp_bridge->id);
+		port->vcpi.vcpi = dp_bridge->vcpi;
+		mst->mst_fw_cbs->deallocate_vcpi(&mst->mst_mgr, port);
+
+		dp_bridge->vcpi = 0;
+		dp_bridge->pbn = 0;
+		return rc;
+	}
 
 	_dp_mst_update_timeslots(mst, dp_bridge);
+
+	return 0;
 }
 
 static void _dp_mst_bridge_pre_enable_part2(struct dp_mst_bridge *dp_bridge)
@@ -605,7 +628,13 @@ static void dp_mst_bridge_pre_enable(struct drm_bridge *drm_bridge)
 		goto end;
 	}
 
-	_dp_mst_bridge_pre_enable_part1(bridge);
+	rc = _dp_mst_bridge_pre_enable_part1(bridge);
+	if (rc) {
+		DP_ERR("[%d] mst payload setup failed, rc=%d\n",
+		       bridge->id, rc);
+		dp->unprepare(dp, bridge->dp_panel);
+		goto end;
+	}
 
 	rc = dp->enable(dp, bridge->dp_panel);
 	if (rc) {
