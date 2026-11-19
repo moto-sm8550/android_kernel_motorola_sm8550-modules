@@ -160,6 +160,8 @@ struct dp_hdcp {
 	struct sde_hdcp_ops *ops;
 
 	u32 source_cap;
+	/* source capabilities already queried for this connection */
+	bool caps_probed;
 
 	struct dp_hdcp_dev dev[HDCP_VERSION_MAX];
 };
@@ -415,6 +417,18 @@ static void dp_display_check_source_hdcp_caps(struct dp_display_private *dp)
 		return;
 	}
 
+	/*
+	 * Probing the capabilities loads TZ apps and verifies the key boxes,
+	 * which costs tens of milliseconds. The result cannot change while the
+	 * same sink stays connected, so do it once per connection instead of on
+	 * every attention request.
+	 */
+	if (dp->hdcp.caps_probed) {
+		DP_DEBUG("using cached source caps: 0x%x\n",
+				dp->hdcp.source_cap);
+		return;
+	}
+
 	DP_INFO("##\n");
 	for (i = 0; i < HDCP_VERSION_MAX; i++) {
 		struct dp_hdcp_dev *dev = &hdcp_dev[i];
@@ -433,6 +447,7 @@ static void dp_display_check_source_hdcp_caps(struct dp_display_private *dp)
 			dp->hdcp.source_cap |= dev->ver;
 	}
 
+	dp->hdcp.caps_probed = true;
 	dp_display_update_hdcp_status(dp, false);
 	DP_INFO("==\n");
 }
@@ -1292,6 +1307,9 @@ static int dp_display_process_hpd_high(struct dp_display_private *dp)
 	}
 
 	dp_display_state_add(DP_STATE_CONNECTED);
+
+	/* a new connection: probe the source HDCP capabilities again */
+	dp->hdcp.caps_probed = false;
 
 	dp->dp_display.max_pclk_khz = min(dp->parser->max_pclk_khz,
 					dp->debug->max_pclk_khz);
