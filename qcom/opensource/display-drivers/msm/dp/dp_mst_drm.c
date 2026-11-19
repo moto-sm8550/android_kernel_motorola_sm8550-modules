@@ -438,6 +438,39 @@ static void _dp_mst_update_single_timeslot(struct dp_mst_private *mst,
 	}
 }
 
+/*
+ * Release the vcpi and the payload entry of a stream that never became
+ * usable. Follows the teardown order of _dp_mst_bridge_pre_disable_part2():
+ * drop the port's slots, push the table update that removes the payload, then
+ * hand the vcpi back. Idempotent, so a path that fails twice can call it again.
+ */
+static void _dp_mst_bridge_release_payload(struct dp_mst_bridge *dp_bridge)
+{
+	struct dp_display *dp_display = dp_bridge->display;
+	struct sde_connector *c_conn =
+		to_sde_connector(dp_bridge->connector);
+	struct dp_mst_private *mst = dp_display->dp_mst_prv_info;
+	struct drm_dp_mst_port *port = c_conn->mst_port;
+
+	mst->mst_fw_cbs->reset_vcpi_slots(&mst->mst_mgr, port);
+	if (mst->mst_fw_cbs->update_payload_part1(&mst->mst_mgr))
+		DP_ERR("mst: payload unwind failed. bridge:%d\n",
+				dp_bridge->id);
+	port->vcpi.vcpi = dp_bridge->vcpi;
+	mst->mst_fw_cbs->deallocate_vcpi(&mst->mst_mgr, port);
+
+	dp_bridge->vcpi = 0;
+	dp_bridge->pbn = 0;
+
+	/*
+	 * The stream info pushed when the payload was installed still names the
+	 * slots this stream has just given back. Recompute it from the released
+	 * state, which also clears num_slots, so the slots are not left marked
+	 * as occupied by a stream that will never scan out.
+	 */
+	_dp_mst_update_timeslots(mst, dp_bridge);
+}
+
 static int _dp_mst_bridge_pre_enable_part1(struct dp_mst_bridge *dp_bridge)
 {
 	struct dp_display *dp_display = dp_bridge->display;
@@ -489,15 +522,7 @@ static int _dp_mst_bridge_pre_enable_part1(struct dp_mst_bridge *dp_bridge)
 		 * entry that was never installed and every later commit for
 		 * this stream inherits the failure.
 		 */
-		mst->mst_fw_cbs->reset_vcpi_slots(&mst->mst_mgr, port);
-		if (mst->mst_fw_cbs->update_payload_part1(&mst->mst_mgr))
-			DP_ERR("mst: payload unwind failed. bridge:%d\n",
-					dp_bridge->id);
-		port->vcpi.vcpi = dp_bridge->vcpi;
-		mst->mst_fw_cbs->deallocate_vcpi(&mst->mst_mgr, port);
-
-		dp_bridge->vcpi = 0;
-		dp_bridge->pbn = 0;
+		_dp_mst_bridge_release_payload(dp_bridge);
 		return rc;
 	}
 
@@ -506,24 +531,43 @@ static int _dp_mst_bridge_pre_enable_part1(struct dp_mst_bridge *dp_bridge)
 	return 0;
 }
 
-static void _dp_mst_bridge_pre_enable_part2(struct dp_mst_bridge *dp_bridge)
+static int _dp_mst_bridge_pre_enable_part2(struct dp_mst_bridge *dp_bridge)
 {
 	struct dp_display *dp_display = dp_bridge->display;
 	struct dp_mst_private *mst = dp_display->dp_mst_prv_info;
+	int rc;
 
 	DP_MST_DEBUG_V("enter\n");
 	SDE_EVT32_EXTERNAL(SDE_EVTLOG_FUNC_ENTRY, DP_MST_CONN_ID(dp_bridge));
 
 	/* skip mst specific disable operations during suspend */
 	if (mst->state == PM_SUSPEND)
-		return;
+		return 0;
 
-	mst->mst_fw_cbs->check_act_status(&mst->mst_mgr);
+	/*
+	 * The table update from part-1 only takes effect once the hub
+	 * acknowledges it. Without that ACT the sink never learns about the
+	 * payload, so a stream started here would send frames into a virtual
+	 * channel that does not exist. Report it instead of programming on.
+	 */
+	rc = mst->mst_fw_cbs->check_act_status(&mst->mst_mgr);
+	if (rc) {
+		DP_ERR("mst: no act for payload. bridge:%d rc:%d\n",
+				dp_bridge->id, rc);
+		return rc;
+	}
 
-	mst->mst_fw_cbs->update_payload_part2(&mst->mst_mgr);
+	rc = mst->mst_fw_cbs->update_payload_part2(&mst->mst_mgr);
+	if (rc) {
+		DP_ERR("mst: failed to send payload. bridge:%d rc:%d\n",
+				dp_bridge->id, rc);
+		return rc;
+	}
 
 	DP_MST_DEBUG("mst bridge [%d] _pre enable part-2 complete\n",
 			dp_bridge->id);
+
+	return 0;
 }
 
 static void _dp_mst_bridge_pre_disable_part1(struct dp_mst_bridge *dp_bridge)
@@ -636,14 +680,22 @@ static void dp_mst_bridge_pre_enable(struct drm_bridge *drm_bridge)
 		goto end;
 	}
 
+	rc = _dp_mst_bridge_pre_enable_part2(bridge);
+	if (rc) {
+		DP_ERR("[%d] mst payload activation failed, rc=%d\n",
+		       bridge->id, rc);
+		_dp_mst_bridge_release_payload(bridge);
+		dp->unprepare(dp, bridge->dp_panel);
+		goto end;
+	}
+
 	rc = dp->enable(dp, bridge->dp_panel);
 	if (rc) {
 		DP_ERR("[%d] DP display enable failed, rc=%d\n",
 		       bridge->id, rc);
+		_dp_mst_bridge_release_payload(bridge);
 		dp->unprepare(dp, bridge->dp_panel);
 		goto end;
-	} else {
-		_dp_mst_bridge_pre_enable_part2(bridge);
 	}
 
 	DP_MST_INFO("conn:%d mode:%s fps:%d dsc:%d vcpi:%d slots:%d to %d\n",
