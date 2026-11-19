@@ -3843,8 +3843,17 @@ void sde_encoder_register_vblank_callback(struct drm_encoder *drm_enc,
 	for (i = 0; i < sde_enc->num_phys_encs; i++) {
 		struct sde_encoder_phys *phys = sde_enc->phys_encs[i];
 
-		if (phys && phys->ops.control_vblank_irq)
-			phys->ops.control_vblank_irq(phys, enable);
+		if (!phys || !phys->ops.control_vblank_irq)
+			continue;
+
+		/*
+		 * Nothing to disable if this encoder never registered the irq;
+		 * the physical encoder reports the mismatch as -EINVAL.
+		 */
+		if (!enable && !atomic_read(&phys->vblank_refcount))
+			continue;
+
+		phys->ops.control_vblank_irq(phys, enable);
 	}
 	sde_enc->vblank_enabled = enable;
 
