@@ -4015,8 +4015,16 @@ static int dp_pm_prepare(struct device *dev)
 	 * system suspends, otherwise the DP PHY/PLL would stay on while the
 	 * display stack is off. DP_STATE_SRC_PWRDN makes the resume path
 	 * re-init the host through dp_display_prepare().
+	 *
+	 * Same exception as dp_display_unprepare(): in MST mode the host is
+	 * kept up on purpose so that the aux can handle the sideband hot-plug
+	 * messages of the hub. Nothing re-initializes it on the way out of
+	 * suspend (dp_pm_complete() only clears the abort flags), so powering
+	 * it down here would leave the hub's downstream hot-plug dead until
+	 * userspace happens to enable the output again.
 	 */
-	if (dp_display_state_is(DP_STATE_CONNECTED) &&
+	if (!dp->mst.mst_active &&
+			dp_display_state_is(DP_STATE_CONNECTED) &&
 			!dp_display_state_is(DP_STATE_ENABLED) &&
 			dp_display_state_is(DP_STATE_INITIALIZED))
 		dp_display_power_down_host(dp);
