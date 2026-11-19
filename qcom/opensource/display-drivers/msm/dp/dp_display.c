@@ -38,6 +38,14 @@
 #define DRM_DP_IPC_NUM_PAGES 10
 #define DP_MST_DEBUG(fmt, ...) DP_DEBUG(fmt, ##__VA_ARGS__)
 
+/*
+ * Time the DP host is kept initialized after a stream-only teardown (external
+ * display disabled but still connected) before it is powered down. Long enough
+ * to cover a burst of modesets, short enough not to keep the PHY/PLL on for an
+ * external display that stays off while the system stays awake.
+ */
+#define DP_HOST_PWRDN_DELAY_MS 5000
+
 #define dp_display_state_show(x) { \
 	DP_ERR("%s: state (0x%x): %s\n", x, dp->state, \
 		dp_display_state_name(dp->state)); \
@@ -199,6 +207,7 @@ struct dp_display_private {
 	struct msm_drm_private *priv;
 
 	struct workqueue_struct *wq;
+	struct delayed_work host_pwrdn_work;
 	struct delayed_work hdcp_cb_work;
 	struct work_struct connect_work;
 	struct work_struct attention_work;
@@ -1208,6 +1217,52 @@ static void dp_display_host_deinit(struct dp_display_private *dp)
 	DP_INFO("[OK]\n");
 }
 
+/*
+ * Power down the DP host: stop the controller, release the PHY/PLL and mark
+ * that the next enable has to bring the host back up (DP_STATE_SRC_PWRDN is
+ * consumed by dp_display_prepare()).
+ *
+ * Caller must hold dp->session_lock.
+ */
+static void dp_display_power_down_host(struct dp_display_private *dp)
+{
+	dp->link->psm_config(dp->link, &dp->panel->link_info, true);
+	dp->debug->psm_enabled = true;
+
+	dp->ctrl->off(dp->ctrl);
+	dp_display_host_unready(dp);
+	dp_display_host_deinit(dp);
+	dp_display_state_add(DP_STATE_SRC_PWRDN);
+}
+
+/*
+ * Power down a host that was left initialized by a stream-only teardown (see
+ * dp_display_unprepare()) and whose external display was never re-enabled. The
+ * work is cancelled whenever a new enable, a disconnect or a suspend comes in.
+ */
+static void dp_display_host_pwrdn_work(struct work_struct *work)
+{
+	struct dp_display_private *dp = container_of(to_delayed_work(work),
+			struct dp_display_private, host_pwrdn_work);
+
+	mutex_lock(&dp->session_lock);
+
+	if (dp_display_state_is(DP_STATE_ENABLED) ||
+			dp_display_state_is(DP_STATE_ABORTED) ||
+			dp_display_state_is(DP_STATE_SUSPENDED) ||
+			!dp_display_state_is(DP_STATE_CONNECTED) ||
+			!dp_display_state_is(DP_STATE_INITIALIZED) ||
+			dp->active_stream_cnt) {
+		mutex_unlock(&dp->session_lock);
+		return;
+	}
+
+	DP_INFO("external display idle, powering down host\n");
+	dp_display_power_down_host(dp);
+
+	mutex_unlock(&dp->session_lock);
+}
+
 static int dp_display_process_hpd_high(struct dp_display_private *dp)
 {
 	int rc = -EINVAL;
@@ -1668,6 +1723,9 @@ static void dp_display_disconnect_sync(struct dp_display_private *dp)
 	int disconnect_delay_ms;
 
 	SDE_EVT32_EXTERNAL(SDE_EVTLOG_FUNC_ENTRY, dp->state);
+	/* the idle power down must not race with this teardown */
+	cancel_delayed_work_sync(&dp->host_pwrdn_work);
+
 	/* cancel any pending request */
 	dp_display_state_add(DP_STATE_ABORTED);
 
@@ -1714,6 +1772,9 @@ static int dp_display_usbpd_disconnect_cb(struct device *dev)
 		rc = -ENODEV;
 		goto end;
 	}
+
+	/* the host is being torn down for real, drop the idle power down */
+	cancel_delayed_work_sync(&dp->host_pwrdn_work);
 
 	SDE_EVT32_EXTERNAL(SDE_EVTLOG_FUNC_ENTRY, dp->state,
 			dp->debug->psm_enabled);
@@ -2502,6 +2563,12 @@ static int dp_display_prepare(struct dp_display *dp_display, void *panel)
 
 	dp = container_of(dp_display, struct dp_display_private, dp_display);
 
+	/*
+	 * The host is kept alive across stream-only teardowns; make sure the
+	 * idle power-down armed by that path cannot race with this enable.
+	 */
+	cancel_delayed_work_sync(&dp->host_pwrdn_work);
+
 	SDE_EVT32_EXTERNAL(SDE_EVTLOG_FUNC_ENTRY, dp->state);
 	mutex_lock(&dp->session_lock);
 
@@ -2929,13 +2996,34 @@ static int dp_display_unprepare(struct dp_display *dp_display, void *panel)
 		goto end;
 
 	if (flags & DP_PANEL_SRC_INITIATED_POWER_DOWN) {
-		dp->link->psm_config(dp->link, &dp->panel->link_info, true);
-		dp->debug->psm_enabled = true;
+		/*
+		 * A disable issued while the sink is still connected is a
+		 * stream-only teardown: userspace is switching the resolution or
+		 * the refresh rate, or turning the external display off. Powering
+		 * the host down here de-inits the PHY/PLL and drops the trained
+		 * link, so the very next pre_enable() has to re-init the whole
+		 * host and re-train every lane. That blanks the sink for the
+		 * whole re-train window (~100-300ms) on each mode switch, which
+		 * is seen as flickering/blanking of Type-C DP/HDMI displays, and
+		 * it disturbs the sink enough that some dongles drop HPD and
+		 * re-negotiate the alt-mode. Keep the host and the link
+		 * programmed and let only the stream be torn down; the host is
+		 * still powered down on disconnect (dp_display_usbpd_disconnect_cb),
+		 * before system suspend (dp_pm_prepare) and, if the external
+		 * display stays off, by dp_display_host_pwrdn_work() after
+		 * DP_HOST_PWRDN_DELAY_MS.
+		 */
+		if (!dp_display_state_is(DP_STATE_SUSPENDED) &&
+				dp_display_state_is(DP_STATE_CONNECTED)) {
+			dp_display_state_remove(DP_STATE_ENABLED);
+			complete_all(&dp->notification_comp);
+			queue_delayed_work(dp->wq, &dp->host_pwrdn_work,
+					msecs_to_jiffies(DP_HOST_PWRDN_DELAY_MS));
+			DP_INFO("host kept alive, stream only teardown\n");
+			goto end;
+		}
 
-		dp->ctrl->off(dp->ctrl);
-		dp_display_host_unready(dp);
-		dp_display_host_deinit(dp);
-		dp_display_state_add(DP_STATE_SRC_PWRDN);
+		dp_display_power_down_host(dp);
 	}
 
 	dp_display_state_remove(DP_STATE_ENABLED);
@@ -3326,6 +3414,7 @@ static int dp_display_create_workqueue(struct dp_display_private *dp)
 		return -EPERM;
 	}
 
+	INIT_DELAYED_WORK(&dp->host_pwrdn_work, dp_display_host_pwrdn_work);
 	INIT_DELAYED_WORK(&dp->hdcp_cb_work, dp_display_hdcp_cb_work);
 	INIT_WORK(&dp->connect_work, dp_display_connect_work);
 	INIT_WORK(&dp->attention_work, dp_display_attention_work);
@@ -3873,6 +3962,9 @@ static int dp_display_remove(struct platform_device *pdev)
 
 	dp = platform_get_drvdata(pdev);
 
+	/* stop the idle power down before its panel/debug data goes away */
+	cancel_delayed_work_sync(&dp->host_pwrdn_work);
+
 	dp_display_deinit_sub_modules(dp);
 
 	if (dp->wq)
@@ -3895,6 +3987,7 @@ static int dp_pm_prepare(struct device *dev)
 			struct dp_display_private, dp_display);
 
 	SDE_EVT32_EXTERNAL(SDE_EVTLOG_FUNC_ENTRY);
+	cancel_delayed_work_sync(&dp->host_pwrdn_work);
 	mutex_lock(&dp->session_lock);
 	dp_display_set_mst_state(g_dp_display, PM_SUSPEND);
 
@@ -3911,6 +4004,19 @@ static int dp_pm_prepare(struct device *dev)
 		dp->aux->abort(dp->aux, true);
 		dp->ctrl->abort(dp->ctrl, true);
 	}
+
+	/*
+	 * The host is deliberately kept initialized across stream-only
+	 * teardowns (see dp_display_unprepare()) so that mode switches do not
+	 * have to re-train the link. Make sure it is powered down before the
+	 * system suspends, otherwise the DP PHY/PLL would stay on while the
+	 * display stack is off. DP_STATE_SRC_PWRDN makes the resume path
+	 * re-init the host through dp_display_prepare().
+	 */
+	if (dp_display_state_is(DP_STATE_CONNECTED) &&
+			!dp_display_state_is(DP_STATE_ENABLED) &&
+			dp_display_state_is(DP_STATE_INITIALIZED))
+		dp_display_power_down_host(dp);
 
 	dp_display_state_add(DP_STATE_SUSPENDED);
 	mutex_unlock(&dp->session_lock);
