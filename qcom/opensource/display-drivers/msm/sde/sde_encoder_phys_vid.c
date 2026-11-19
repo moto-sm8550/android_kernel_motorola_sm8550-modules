@@ -887,9 +887,23 @@ static void sde_encoder_phys_vid_get_hw_resources(
 	hw_res->intfs[phys_enc->intf_idx - INTF_0] = INTF_MODE_VIDEO;
 }
 
+static bool sde_encoder_phys_vid_intf_running(
+		struct sde_encoder_phys *phys_enc)
+{
+	struct intf_status intf_status = {0};
+
+	if (!phys_enc->hw_intf || !phys_enc->hw_intf->ops.get_status)
+		return true;
+
+	phys_enc->hw_intf->ops.get_status(phys_enc->hw_intf, &intf_status);
+
+	return intf_status.is_en;
+}
+
 static int _sde_encoder_phys_vid_wait_for_vblank(
 		struct sde_encoder_phys *phys_enc, bool notify)
 {
+	struct sde_encoder_phys_vid *vid_enc;
 	struct sde_encoder_wait_info wait_info = {0};
 	int ret = 0, new_cnt;
 	u32 event = SDE_ENCODER_FRAME_EVENT_ERROR |
@@ -905,6 +919,7 @@ static int _sde_encoder_phys_vid_wait_for_vblank(
 		return -EINVAL;
 	}
 
+	vid_enc = to_sde_encoder_phys_vid(phys_enc);
 	hw_ctl = phys_enc->hw_ctl;
 	conn = phys_enc->connector;
 
@@ -936,6 +951,24 @@ static int _sde_encoder_phys_vid_wait_for_vblank(
 			flush_register = hw_ctl->ops.get_flush_register(hw_ctl);
 		if (!flush_register)
 			ret = 0;
+
+		/*
+		 * The sink can go away between the atomic check and the kickoff,
+		 * leaving the interface timing engine off while the frame is
+		 * already flushed and waiting to retire. No vsync will ever
+		 * report that frame, so this is a teardown and not a hung
+		 * pipeline: stop waiting and skip the sw override below, which
+		 * would only reprogram hardware that is going down.
+		 */
+		if (ret && notify &&
+				!sde_encoder_phys_vid_intf_running(phys_enc)) {
+			SDE_DEBUG_VIDENC(vid_enc,
+					"intf not running, dropping commit done wait\n");
+			SDE_EVT32(DRMID(phys_enc->parent),
+					phys_enc->hw_intf->idx - INTF_0,
+					SDE_EVTLOG_FUNC_CASE2);
+			ret = 0;
+		}
 
 		/* if we timeout after the extended wait, reset mixers and do sw override */
 		if (ret && phys_enc->sde_kms->catalog->hw_fence_rev)
