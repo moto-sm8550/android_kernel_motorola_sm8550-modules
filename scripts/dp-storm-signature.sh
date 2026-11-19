@@ -17,6 +17,13 @@
 #   retrain          dp_ctrl_link_maintenance retrains
 #   host_not_ready   enables refused because the host was not ready
 #   commit_fail      wait-for-commit-done failures
+#   intf_stopped     commit-done waits abandoned because the interface timing
+#                    engine was already off (sink lost mid-commit), i.e. the
+#                    teardown the wait used to report as a failure. This one
+#                    needs SDE debug logging: capture with drm.debug=0x4, or
+#                    echo 'file sde_encoder_phys_vid.c +p' > \
+#                         /sys/kernel/debug/dynamic_debug/control
+#                    Without it the script prints a note and the field stays 0.
 #   vsync_timeout    encoder vsync-event wait timeouts (84 ms stalls)
 #   vblank_einval    phys vblank disable with no registered irq (-EINVAL)
 #   sink_gate        atomic commits refused because the sink was gone
@@ -53,6 +60,11 @@ BEGIN { max_gap = 0; have_pre = 0 }
 	if (index($0, "dp_ctrl_link_maintenance"))        note("retrain")
 	if (index($0, "host not ready"))                  note("host_not_ready")
 	if (index($0, "wait for commit done fail"))       note("commit_fail")
+	if (index($0, "intf not running"))                note("intf_stopped")
+
+	# proxy for "this dump has SDE debug output at all": the typical vid wait
+	# prints pending_cnt on every kickoff at debug level
+	if (index($0, "pending_cnt")) dbg_seen = 1
 	if (index($0, "vsync event complete timed out"))  note("vsync_timeout")
 	if (index($0, "control vblank irq error"))        note("vblank_einval")
 	if (index($0, "no longer ready, failing commit")) note("sink_gate")
@@ -85,15 +97,20 @@ BEGIN { max_gap = 0; have_pre = 0 }
 	}
 }
 END {
+	if (!dbg_seen && !c["intf_stopped"])
+		printf "note: no SDE debug output in this dump, so intf_stopped cannot be measured; capture with drm.debug=0x4 or enable dynamic debug for sde_encoder_phys_vid.c\n" > "/dev/stderr"
+
 	printf "dp_teardown=%d dp_enable=%d stream_only=%d host_pwrdn=%d " \
-		"retrain=%d host_not_ready=%d commit_fail=%d vsync_timeout=%d " \
+		"retrain=%d host_not_ready=%d commit_fail=%d intf_stopped=%d " \
+		"vsync_timeout=%d " \
 		"vblank_einval=%d sink_gate=%d refresh_reject=%d hpd_high=%d " \
 		"hpd_low=%d hdcp_probe=%d hdcp_app_fail=%d bw06=%d bw10=%d " \
 		"bw20=%d bw30=%d max_teardown_ms=%d dsi_switch=%d dsi_60=%d " \
 		"dsi_90=%d\n", \
 		c["dp_teardown"], c["dp_enable"], c["stream_only"], \
 		c["host_pwrdn"], c["retrain"], c["host_not_ready"], \
-		c["commit_fail"], c["vsync_timeout"], c["vblank_einval"], \
+		c["commit_fail"], c["intf_stopped"], c["vsync_timeout"], \
+		c["vblank_einval"], \
 		c["sink_gate"], c["refresh_reject"], c["hpd_high"], \
 		c["hpd_low"], c["hdcp_probe"], c["hdcp_app_fail"], \
 		c["bw6"], c["bw10"], c["bw20"], c["bw30"], max_gap, \
