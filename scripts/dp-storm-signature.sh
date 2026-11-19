@@ -21,6 +21,9 @@
 #                    engine was already off (sink lost mid-commit), i.e. the
 #                    teardown the wait used to report as a failure. Logged at
 #                    info level, so a plain dmesg capture carries it.
+#   hwfence_txq      hw-fence txq updates refused by the hw-fence driver; a
+#                    frame queued behind one that will never be retired
+#                    (watch these next to intf_stopped)
 #   vsync_timeout    encoder vsync-event wait timeouts (84 ms stalls)
 #   vblank_einval    phys vblank disable with no registered irq (-EINVAL)
 #   sink_gate        atomic commits refused because the sink was gone
@@ -58,6 +61,7 @@ BEGIN { max_gap = 0; have_pre = 0 }
 	if (index($0, "host not ready"))                  note("host_not_ready")
 	if (index($0, "wait for commit done fail"))       note("commit_fail")
 	if (index($0, "dropping commit done wait"))       note("intf_stopped")
+	if (index($0, "fail txq update"))                 note("hwfence_txq")
 	if (index($0, "vsync event complete timed out"))  note("vsync_timeout")
 	if (index($0, "control vblank irq error"))        note("vblank_einval")
 	if (index($0, "no longer ready, failing commit")) note("sink_gate")
@@ -92,15 +96,15 @@ BEGIN { max_gap = 0; have_pre = 0 }
 END {
 	printf "dp_teardown=%d dp_enable=%d stream_only=%d host_pwrdn=%d " \
 		"retrain=%d host_not_ready=%d commit_fail=%d intf_stopped=%d " \
-		"vsync_timeout=%d " \
+		"hwfence_txq=%d vsync_timeout=%d " \
 		"vblank_einval=%d sink_gate=%d refresh_reject=%d hpd_high=%d " \
 		"hpd_low=%d hdcp_probe=%d hdcp_app_fail=%d bw06=%d bw10=%d " \
 		"bw20=%d bw30=%d max_teardown_ms=%d dsi_switch=%d dsi_60=%d " \
 		"dsi_90=%d\n", \
 		c["dp_teardown"], c["dp_enable"], c["stream_only"], \
 		c["host_pwrdn"], c["retrain"], c["host_not_ready"], \
-		c["commit_fail"], c["intf_stopped"], c["vsync_timeout"], \
-		c["vblank_einval"], \
+		c["commit_fail"], c["intf_stopped"], c["hwfence_txq"], \
+		c["vsync_timeout"], c["vblank_einval"], \
 		c["sink_gate"], c["refresh_reject"], c["hpd_high"], \
 		c["hpd_low"], c["hdcp_probe"], c["hdcp_app_fail"], \
 		c["bw6"], c["bw10"], c["bw20"], c["bw30"], max_gap, \
