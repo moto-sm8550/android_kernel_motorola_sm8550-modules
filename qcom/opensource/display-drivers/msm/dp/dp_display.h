@@ -69,6 +69,8 @@ struct dp_display {
 	int (*unprepare)(struct dp_display *dp_display, void *panel);
 	int (*request_irq)(struct dp_display *dp_display);
 	struct dp_debug *(*get_debug)(struct dp_display *dp_display);
+	/* true while the sink is still attached and can be programmed */
+	bool (*is_sink_ready)(struct dp_display *dp_display);
 	void (*post_open)(struct dp_display *dp_display);
 	int (*config_hdr)(struct dp_display *dp_display, void *panel,
 				struct drm_msm_ext_hdr_metadata *hdr_meta,

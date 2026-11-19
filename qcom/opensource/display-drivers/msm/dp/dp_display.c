@@ -285,6 +285,18 @@ static bool dp_display_is_ready(struct dp_display_private *dp)
 		dp->hpd->alt_mode_cfg_done;
 }
 
+static bool dp_display_sink_ready(struct dp_display *dp_display)
+{
+	struct dp_display_private *dp;
+
+	if (!dp_display)
+		return false;
+
+	dp = container_of(dp_display, struct dp_display_private, dp_display);
+
+	return dp_display_is_ready(dp);
+}
+
 static void dp_audio_enable(struct dp_display_private *dp, bool enable)
 {
 	struct dp_panel *dp_panel;
@@ -2727,10 +2739,13 @@ static int dp_display_enable(struct dp_display *dp_display, void *panel)
 
 	/*
 	 * If DP_STATE_READY is not set, we should not do any HW
-	 * programming.
+	 * programming. Report it as a failure: returning success here used
+	 * to leave the pipeline programmed by nobody, and the atomic commit
+	 * then waited for a commit_done that never came (-110).
 	 */
 	if (!dp_display_state_is(DP_STATE_READY)) {
 		dp_display_state_show("[host not ready]");
+		rc = dp_display_state_is(DP_STATE_ABORTED) ? -ENODEV : -EAGAIN;
 		goto end;
 	}
 
@@ -3872,6 +3887,7 @@ static int dp_display_probe(struct platform_device *pdev)
 	g_dp_display->unprepare     = dp_display_unprepare;
 	g_dp_display->request_irq   = dp_request_irq;
 	g_dp_display->get_debug     = dp_get_debug;
+	g_dp_display->is_sink_ready = dp_display_sink_ready;
 	g_dp_display->post_open     = NULL;
 	g_dp_display->post_init     = dp_display_post_init;
 	g_dp_display->config_hdr    = dp_display_config_hdr;

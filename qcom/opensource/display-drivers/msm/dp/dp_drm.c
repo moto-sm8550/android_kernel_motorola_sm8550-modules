@@ -528,6 +528,7 @@ int dp_connector_atomic_check(struct drm_connector *connector,
 	void *display,
 	struct drm_atomic_state *a_state)
 {
+	struct dp_display *dp = display;
 	struct sde_connector *sde_conn;
 	struct drm_connector_state *old_state;
 	struct drm_connector_state *c_state;
@@ -541,6 +542,19 @@ int dp_connector_atomic_check(struct drm_connector *connector,
 
 	if (!old_state || !c_state)
 		return -EINVAL;
+
+	/*
+	 * A commit that keeps the connector on a crtc needs a sink that can be
+	 * programmed. It can be gone by now (cable pulled, HPD low handled
+	 * while the commit was in flight) and the enable would then program
+	 * nothing, leaving the crtc waiting for a commit_done until it times
+	 * out. Refuse the commit instead so userspace retries with a state
+	 * that reflects the disconnection.
+	 */
+	if (c_state->crtc && dp->is_sink_ready && !dp->is_sink_ready(dp)) {
+		DP_ERR("sink no longer ready, failing commit\n");
+		return -EAGAIN;
+	}
 
 	sde_conn = to_sde_connector(connector);
 

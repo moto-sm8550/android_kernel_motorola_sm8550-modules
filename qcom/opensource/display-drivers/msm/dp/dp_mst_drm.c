@@ -1202,6 +1202,17 @@ static int dp_mst_connector_atomic_check(struct drm_connector *connector,
 	if (!new_conn_state)
 		return rc;
 
+	/*
+	 * Same as the SST connector: do not let a commit keep an MST stream on
+	 * a crtc whose sink is already gone, the enable would program nothing
+	 * and the crtc would time out waiting for its commit_done.
+	 */
+	if (new_conn_state->crtc && dp_display->is_sink_ready &&
+			!dp_display->is_sink_ready(dp_display)) {
+		DP_ERR("mst sink no longer ready, failing commit\n");
+		return -EAGAIN;
+	}
+
 	old_conn_state = drm_atomic_get_old_connector_state(state, connector);
 	if (!old_conn_state)
 		goto mode_set;
