@@ -971,7 +971,16 @@ int dsi_panel_set_backlight(struct dsi_panel *panel, u32 bl_lvl)
 	if (panel->host_config.ext_bridge_mode)
 		return 0;
 
-	if(panel->lhbm_config.enable) {
+	/*
+	 * dbv_level is scaled against the local HBM alpha table, so only a real
+	 * backlight level may be stored here. dsi_panel_set_hbm() reaches this
+	 * function through HBM_BRIGHTNESS() with BRIGHTNESS_HBM_ON/OFF, and that
+	 * sentinel divided by the alpha table step lands far past the end of the
+	 * table: the alpha update is refused, the HBM param command is still
+	 * sent, and the panel keeps whatever FOD alpha it had.
+	 */
+	if (panel->lhbm_config.enable &&
+	    bl_lvl != BRIGHTNESS_HBM_ON && bl_lvl != BRIGHTNESS_HBM_OFF) {
 		panel->lhbm_config.dbv_level = bl_lvl;
 		DSI_DEBUG("backlight type:%d dbv lvl:%d\n", bl->type, bl_lvl);
 	}
