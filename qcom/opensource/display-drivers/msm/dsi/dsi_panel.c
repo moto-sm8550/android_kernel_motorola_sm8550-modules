@@ -1248,6 +1248,8 @@ static int dsi_panel_set_local_hbm_param(struct dsi_panel *panel,
 					rc = -EINVAL;
 					goto end;
 				}
+				DSI_INFO("%s: local hbm alpha level %d for dbv %d\n",
+					__func__, alpha_level, lhbm_config->dbv_level);
 				alpha = lhbm_config->alpha[alpha_level];
 				if(lhbm_config->dc_hybird_threshold == 0){
 					payload[1] = (alpha&0xff00)>>8;
